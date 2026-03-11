@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -93,10 +94,18 @@ def parse_pom(pom_path: Path) -> dict[str, str]:
     project = strip_namespaces(root)
 
     parent = project.find("parent")
-    group_id = text_of(project.find("groupId")) or text_of(parent.find("groupId") if parent is not None else None)
-    version = text_of(project.find("version")) or text_of(parent.find("version") if parent is not None else None)
-    artifact_id = text_of(project.find("artifactId"))
-    packaging = text_of(project.find("packaging")) or "jar"
+    properties = build_pom_properties(project, parent)
+
+    group_id = resolve_value(
+        text_of(project.find("groupId")) or text_of(parent.find("groupId") if parent is not None else None),
+        properties,
+    )
+    version = resolve_value(
+        text_of(project.find("version")) or text_of(parent.find("version") if parent is not None else None),
+        properties,
+    )
+    artifact_id = resolve_value(text_of(project.find("artifactId")), properties)
+    packaging = resolve_value(text_of(project.find("packaging")) or "jar", properties) or "jar"
     return {
         "group_id": group_id or "",
         "artifact_id": artifact_id or "",
@@ -117,6 +126,80 @@ def text_of(node: ET.Element | None) -> str | None:
         return None
     value = node.text.strip()
     return value or None
+
+
+def build_pom_properties(
+    project: ET.Element,
+    parent: ET.Element | None,
+) -> dict[str, str]:
+    properties: dict[str, str] = {}
+
+    parent_group_id = text_of(parent.find("groupId") if parent is not None else None)
+    parent_artifact_id = text_of(parent.find("artifactId") if parent is not None else None)
+    parent_version = text_of(parent.find("version") if parent is not None else None)
+
+    artifact_id = text_of(project.find("artifactId"))
+    packaging = text_of(project.find("packaging")) or "jar"
+    group_id = text_of(project.find("groupId")) or parent_group_id
+    version = text_of(project.find("version")) or parent_version
+
+    properties.update(
+        {
+            "project.groupId": group_id or "",
+            "pom.groupId": group_id or "",
+            "project.artifactId": artifact_id or "",
+            "pom.artifactId": artifact_id or "",
+            "project.version": version or "",
+            "pom.version": version or "",
+            "project.packaging": packaging or "jar",
+            "pom.packaging": packaging or "jar",
+            "project.parent.groupId": parent_group_id or "",
+            "parent.groupId": parent_group_id or "",
+            "project.parent.artifactId": parent_artifact_id or "",
+            "parent.artifactId": parent_artifact_id or "",
+            "project.parent.version": parent_version or "",
+            "parent.version": parent_version or "",
+        }
+    )
+
+    properties_node = project.find("properties")
+    if properties_node is not None:
+        for child in list(properties_node):
+            value = text_of(child)
+            if value is not None:
+                properties[child.tag] = value
+
+    resolved = dict(properties)
+    for _ in range(10):
+        changed = False
+        for key, value in list(resolved.items()):
+            expanded = replace_placeholders(value, resolved)
+            if expanded != value:
+                resolved[key] = expanded
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def resolve_value(value: str | None, properties: dict[str, str]) -> str | None:
+    if value is None:
+        return None
+    resolved = value
+    for _ in range(10):
+        expanded = replace_placeholders(resolved, properties)
+        if expanded == resolved:
+            break
+        resolved = expanded
+    return resolved
+
+
+def replace_placeholders(value: str, properties: dict[str, str]) -> str:
+    def replacer(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return properties.get(key, match.group(0))
+
+    return re.sub(r"\$\{([^}]+)\}", replacer, value)
 
 
 def validate_path_consistency(record: ArtifactRecord) -> str | None:

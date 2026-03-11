@@ -33,16 +33,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validate_config(config)
         runtime = resolve_runtime_context(config)
+        reporter.info(f"START    dryRun={config.dry_run} retry={config.retry} timeout={config.timeout}s")
+        reporter.info(f"REPO     local={runtime.local_repo}")
+        reporter.info("SETTINGS effective=%s", runtime.effective_settings_file or "<default-not-found>")
+        reporter.info(
+            "TARGET   release=%s snapshot=%s",
+            config.release_repo_url,
+            config.snapshot_repo_url,
+        )
 
         if config.threads != 1:
             reporter.warning("V1 当前仍按串行执行，--threads 已记录但暂未启用并发。")
 
         candidate_dirs = scan_version_dirs(runtime.local_repo)
         summary.scan_total = len(candidate_dirs)
+        reporter.info(f"SCAN     检测到候选版本目录 {summary.scan_total} 个")
 
         records = [build_record_from_dir(path, runtime.local_repo) for path in candidate_dirs]
         selected_records = apply_selection_rules(records, config)
         summary.filtered_total = len(selected_records)
+        reporter.info(f"FILTER   筛选后命中构件 {summary.filtered_total} 个")
+        if summary.filtered_total == 0:
+            reporter.warning("未匹配到任何构件，请检查 --gav 与 POM 实际坐标是否一致。")
 
         for record in selected_records:
             validate_record(record, config)
@@ -59,7 +71,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 summary.snapshot_total += 1
 
-            reporter.event("VALIDATE", record, "CHECK", "OK")
+            reporter.event(
+                "VALIDATE",
+                record,
+                "CHECK",
+                "OK",
+                f"selectedBy={record.selected_by} repoId={record.target_repo_id}",
+            )
             for warning in record.warnings:
                 reporter.warning(f"{record.gav()} {warning}")
 
@@ -91,7 +109,13 @@ def main(argv: list[str] | None = None) -> int:
 
             if config.dry_run:
                 record.deploy_status = DEPLOY_DRY_RUN
-                reporter.event("DEPLOY", record, "DRY-RUN", DEPLOY_DRY_RUN)
+                reporter.event(
+                    "DEPLOY",
+                    record,
+                    "DRY-RUN",
+                    DEPLOY_DRY_RUN,
+                    f"url={record.target_repo_url}",
+                )
                 continue
 
             deploy_record(record, config, runtime)
@@ -107,11 +131,13 @@ def main(argv: list[str] | None = None) -> int:
 
         reporter.write_failed_files()
         reporter.write_report(summary)
+        reporter.log_summary(summary)
         return 0 if not reporter.failures else 1
     except Exception as exc:
         reporter.error(str(exc))
         reporter.write_failed_files()
         reporter.write_report(summary)
+        reporter.log_summary(summary)
         return 1
     finally:
         if runtime is not None:

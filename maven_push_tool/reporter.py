@@ -31,6 +31,9 @@ class Reporter:
 
         self.failures: list[ArtifactRecord] = []
 
+    def info(self, message: str, *args: object) -> None:
+        self.logger.info(message, *args)
+
     def event(self, stage: str, record: ArtifactRecord, action: str, result: str, detail: str = "") -> None:
         repo_type = record.repo_type or "-"
         packaging = record.packaging or "-"
@@ -94,6 +97,20 @@ class Reporter:
         self.config.report_file.write_text(
             json.dumps(summary.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+
+    def log_summary(self, summary: ReportSummary) -> None:
+        self.logger.info(
+            "SUMMARY  scan=%s filtered=%s release=%s snapshot=%s dryRun=%s success=%s skipped=%s failed=%s validationFailed=%s",
+            summary.scan_total,
+            summary.filtered_total,
+            summary.release_total,
+            summary.snapshot_total,
+            summary.dry_run,
+            summary.deploy_success,
+            summary.deploy_skipped,
+            summary.deploy_failed,
+            summary.validation_failed,
         )
 
 
