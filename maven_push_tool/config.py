@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -149,9 +151,9 @@ def load_config(argv: Optional[list[str]] = None) -> AppConfig:
     packaging = parse_packaging(args.packaging)
     gavs = parse_gav_list(args.gav)
     return AppConfig(
-        local_repo=args.local_repo,
-        settings_file=args.settings_file,
-        mvn_bin=args.mvn_bin,
+        local_repo=normalize_cli_path(args.local_repo),
+        settings_file=normalize_cli_path(args.settings_file),
+        mvn_bin=normalize_cli_command_path(args.mvn_bin),
         release_repo_id=args.release_repo_id,
         release_repo_url=args.release_repo_url,
         snapshot_repo_id=args.snapshot_repo_id,
@@ -163,7 +165,7 @@ def load_config(argv: Optional[list[str]] = None) -> AppConfig:
         group_prefixes=args.group_prefix,
         exclude_group_prefixes=args.exclude_group_prefix,
         gavs=gavs,
-        input_file=args.input_file,
+        input_file=normalize_cli_path(args.input_file),
         scan_subpath=args.scan_subpath,
         packaging=packaging,
         include_classifier=args.include_classifier,
@@ -176,9 +178,9 @@ def load_config(argv: Optional[list[str]] = None) -> AppConfig:
         release_precheck=args.release_precheck,
         skip_existing=args.skip_existing,
         fail_on_precheck_error=args.fail_on_precheck_error,
-        log_file=args.log_file,
-        failed_file=args.failed_file,
-        report_file=args.report_file,
+        log_file=normalize_cli_path(args.log_file),
+        failed_file=normalize_cli_path(args.failed_file),
+        report_file=normalize_cli_path(args.report_file),
         append_log=args.append_log,
         log_level=args.log_level.upper(),
         allow_redeploy=args.allow_redeploy,
@@ -278,6 +280,7 @@ def resolve_runtime_context(config: AppConfig) -> RuntimeContext:
     local_repo = resolve_local_repo(config, settings_info)
     if not local_repo.exists():
         raise ValueError(f"本地仓库不存在: {local_repo}")
+    effective_mvn_bin = resolve_maven_binary(config.mvn_bin)
 
     effective_settings = settings_info.path if settings_info.path and settings_info.path.exists() else None
     temp_files: list[Path] = []
@@ -289,6 +292,7 @@ def resolve_runtime_context(config: AppConfig) -> RuntimeContext:
         local_repo=local_repo,
         settings_info=settings_info,
         effective_settings_file=effective_settings,
+        effective_mvn_bin=effective_mvn_bin,
         temp_files=temp_files,
     )
 
@@ -297,7 +301,7 @@ def resolve_local_repo(config: AppConfig, settings_info: SettingsInfo) -> Path:
     if config.local_repo:
         return config.local_repo.expanduser().resolve()
     if settings_info.local_repository:
-        return settings_info.local_repository.expanduser().resolve()
+        return normalize_cli_path(settings_info.local_repository).expanduser().resolve()
     return (Path.home() / ".m2" / "repository").resolve()
 
 
@@ -355,7 +359,7 @@ def generate_temp_settings(
 
 
 def default_settings_path() -> Optional[Path]:
-    candidate = Path.home() / ".m2" / "settings.xml"
+    candidate = normalize_cli_path(Path.home() / ".m2" / "settings.xml")
     return candidate
 
 
@@ -377,3 +381,52 @@ def normalize_subpath(value: Optional[str]) -> Optional[str]:
     if not value:
         return value
     return value.replace("\\", "/").strip("/")
+
+
+def normalize_cli_path(value: Path | str | None) -> Path | None:
+    if value is None:
+        return None
+    raw = str(value)
+    if not raw:
+        return None
+    return Path(convert_windows_bash_path(raw))
+
+
+def normalize_cli_command_path(value: str) -> str:
+    return convert_windows_bash_path(value)
+
+
+def convert_windows_bash_path(value: str) -> str:
+    if os.name != "nt":
+        return value
+    stripped = value.strip()
+    match = re.match(r"^/([a-zA-Z])/(.*)$", stripped)
+    if match:
+        drive = match.group(1).upper()
+        rest = match.group(2).replace("/", "\\")
+        return f"{drive}:\\{rest}"
+    return stripped
+
+
+def resolve_maven_binary(mvn_bin: str) -> str:
+    candidate = normalize_cli_command_path(mvn_bin)
+
+    if os.path.isabs(candidate) or any(sep in candidate for sep in ("\\", "/")):
+        if Path(candidate).exists():
+            return str(Path(candidate))
+        raise ValueError(f"未找到 Maven 可执行文件: {candidate}")
+
+    resolved = shutil.which(candidate)
+    if resolved:
+        return resolved
+
+    if os.name == "nt":
+        for suffix in (".cmd", ".bat", ".exe"):
+            resolved = shutil.which(candidate + suffix)
+            if resolved:
+                return resolved
+
+    raise ValueError(
+        "未找到 Maven 可执行文件，请检查 PATH 或通过 --mvn-bin 显式指定，例如 "
+        "--mvn-bin D:/apache-maven/bin/mvn.cmd"
+    )

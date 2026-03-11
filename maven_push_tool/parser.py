@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import AppConfig
@@ -11,6 +12,19 @@ from .models import (
     VALIDATION_INVALID,
     VALIDATION_VALID,
 )
+
+
+@dataclass
+class PomModel:
+    pom_path: Path
+    group_id: str
+    artifact_id: str
+    version: str
+    packaging: str
+    parent_group_id: str
+    parent_artifact_id: str
+    parent_version: str
+    properties: dict[str, str]
 
 
 def build_record_from_dir(version_dir: Path, local_repo: Path) -> ArtifactRecord:
@@ -27,7 +41,7 @@ def build_record_from_dir(version_dir: Path, local_repo: Path) -> ArtifactRecord
 
     record.pom_path = pom_files[0]
     try:
-        pom_info = parse_pom(record.pom_path)
+        pom_info = parse_pom(record.pom_path, local_repo)
     except Exception as exc:  # pragma: no cover - 防御性分支
         set_invalid(record, "validate", f"POM 解析失败: {exc}")
         return record
@@ -88,30 +102,40 @@ def validate_record(record: ArtifactRecord, config: AppConfig) -> None:
     record.validation_status = VALIDATION_VALID
 
 
-def parse_pom(pom_path: Path) -> dict[str, str]:
+def parse_pom(pom_path: Path, local_repo: Path | None = None) -> dict[str, str]:
+    model = load_pom_model(pom_path, local_repo)
+    return {
+        "group_id": model.group_id,
+        "artifact_id": model.artifact_id,
+        "version": model.version,
+        "packaging": model.packaging,
+    }
+
+
+def build_resolved_deploy_pom(
+    pom_path: Path,
+    group_id: str,
+    artifact_id: str,
+    version: str,
+    packaging: str,
+    local_repo: Path | None = None,
+) -> str:
+    model = load_pom_model(pom_path, local_repo)
     tree = ET.parse(pom_path)
-    root = tree.getroot()
-    project = strip_namespaces(root)
+    project = strip_namespaces(tree.getroot())
+
+    set_or_create_child(project, "groupId", group_id)
+    set_or_create_child(project, "artifactId", artifact_id)
+    set_or_create_child(project, "version", version)
+    set_or_create_child(project, "packaging", packaging)
 
     parent = project.find("parent")
-    properties = build_pom_properties(project, parent)
+    if parent is not None:
+        set_or_create_child(parent, "groupId", model.parent_group_id)
+        set_or_create_child(parent, "artifactId", model.parent_artifact_id)
+        set_or_create_child(parent, "version", model.parent_version)
 
-    group_id = resolve_value(
-        text_of(project.find("groupId")) or text_of(parent.find("groupId") if parent is not None else None),
-        properties,
-    )
-    version = resolve_value(
-        text_of(project.find("version")) or text_of(parent.find("version") if parent is not None else None),
-        properties,
-    )
-    artifact_id = resolve_value(text_of(project.find("artifactId")), properties)
-    packaging = resolve_value(text_of(project.find("packaging")) or "jar", properties) or "jar"
-    return {
-        "group_id": group_id or "",
-        "artifact_id": artifact_id or "",
-        "version": version or "",
-        "packaging": packaging or "jar",
-    }
+    return ET.tostring(project, encoding="unicode")
 
 
 def strip_namespaces(root: ET.Element) -> ET.Element:
@@ -182,6 +206,128 @@ def build_pom_properties(
     return resolved
 
 
+def load_pom_model(
+    pom_path: Path,
+    local_repo: Path | None = None,
+    seen: set[Path] | None = None,
+) -> PomModel:
+    normalized_path = pom_path.resolve()
+    if seen is None:
+        seen = set()
+    if normalized_path in seen:
+        raise ValueError(f"检测到循环父 POM 引用: {normalized_path}")
+
+    tree = ET.parse(normalized_path)
+    project = strip_namespaces(tree.getroot())
+    parent = project.find("parent")
+
+    raw_parent_group_id = text_of(parent.find("groupId") if parent is not None else None)
+    raw_parent_artifact_id = text_of(parent.find("artifactId") if parent is not None else None)
+    raw_parent_version = text_of(parent.find("version") if parent is not None else None)
+    raw_artifact_id = text_of(project.find("artifactId"))
+    raw_group_id = text_of(project.find("groupId"))
+    raw_version = text_of(project.find("version"))
+    raw_packaging = text_of(project.find("packaging")) or "jar"
+
+    parent_model = None
+    parent_pom_path = resolve_parent_pom_path(
+        normalized_path,
+        parent,
+        local_repo,
+        raw_parent_group_id,
+        raw_parent_artifact_id,
+        raw_parent_version,
+    )
+    if parent_pom_path is not None and parent_pom_path.exists():
+        parent_model = load_pom_model(parent_pom_path, local_repo, seen | {normalized_path})
+
+    properties = build_pom_properties(project, parent)
+    if parent_model is not None:
+        merged = dict(parent_model.properties)
+        merged.update(properties)
+        properties = merged
+
+    parent_group_id = parent_model.group_id if parent_model is not None else raw_parent_group_id or ""
+    parent_artifact_id = parent_model.artifact_id if parent_model is not None else raw_parent_artifact_id or ""
+    parent_version = parent_model.version if parent_model is not None else raw_parent_version or ""
+
+    artifact_id = raw_artifact_id or ""
+    group_id = raw_group_id or parent_group_id
+    version = raw_version or parent_version
+    packaging = raw_packaging or "jar"
+
+    for _ in range(10):
+        previous_state = (
+            artifact_id,
+            group_id,
+            version,
+            packaging,
+            parent_group_id,
+            parent_artifact_id,
+            parent_version,
+            tuple(sorted(properties.items())),
+        )
+        parent_group_id = resolve_value(parent_group_id, properties) or parent_group_id
+        parent_artifact_id = resolve_value(parent_artifact_id, properties) or parent_artifact_id
+        parent_version = resolve_value(parent_version, properties) or parent_version
+
+        artifact_id = resolve_value(raw_artifact_id, properties) or artifact_id
+        group_id = resolve_value(raw_group_id or parent_group_id, properties) or group_id
+        version = resolve_value(raw_version or parent_version, properties) or version
+        packaging = resolve_value(raw_packaging or "jar", properties) or packaging
+
+        properties.update(
+            {
+                "project.groupId": group_id,
+                "pom.groupId": group_id,
+                "project.artifactId": artifact_id,
+                "pom.artifactId": artifact_id,
+                "project.version": version,
+                "pom.version": version,
+                "project.packaging": packaging,
+                "pom.packaging": packaging,
+                "project.parent.groupId": parent_group_id,
+                "parent.groupId": parent_group_id,
+                "project.parent.artifactId": parent_artifact_id,
+                "parent.artifactId": parent_artifact_id,
+                "project.parent.version": parent_version,
+                "parent.version": parent_version,
+            }
+        )
+
+        changed = False
+        for key, value in list(properties.items()):
+            expanded = replace_placeholders(value, properties)
+            if expanded != value:
+                properties[key] = expanded
+                changed = True
+
+        current_state = (
+            artifact_id,
+            group_id,
+            version,
+            packaging,
+            parent_group_id,
+            parent_artifact_id,
+            parent_version,
+            tuple(sorted(properties.items())),
+        )
+        if not changed and current_state == previous_state:
+            break
+
+    return PomModel(
+        pom_path=normalized_path,
+        group_id=group_id,
+        artifact_id=artifact_id,
+        version=version,
+        packaging=packaging,
+        parent_group_id=parent_group_id,
+        parent_artifact_id=parent_artifact_id,
+        parent_version=parent_version,
+        properties=properties,
+    )
+
+
 def resolve_value(value: str | None, properties: dict[str, str]) -> str | None:
     if value is None:
         return None
@@ -200,6 +346,50 @@ def replace_placeholders(value: str, properties: dict[str, str]) -> str:
         return properties.get(key, match.group(0))
 
     return re.sub(r"\$\{([^}]+)\}", replacer, value)
+
+
+def set_or_create_child(project: ET.Element, tag: str, value: str) -> None:
+    node = project.find(tag)
+    if node is None:
+        node = ET.SubElement(project, tag)
+    node.text = value
+
+
+def resolve_parent_pom_path(
+    pom_path: Path,
+    parent: ET.Element | None,
+    local_repo: Path | None,
+    parent_group_id: str | None,
+    parent_artifact_id: str | None,
+    parent_version: str | None,
+) -> Path | None:
+    if parent is None:
+        return None
+
+    relative_path = text_of(parent.find("relativePath"))
+    if relative_path is None:
+        relative_path = "../pom.xml"
+
+    if relative_path:
+        candidate = (pom_path.parent / relative_path).resolve()
+        if candidate.exists():
+            return candidate
+
+    if not local_repo:
+        return None
+    if not parent_group_id or not parent_artifact_id or not parent_version:
+        return None
+    if "${" in parent_group_id or "${" in parent_artifact_id or "${" in parent_version:
+        return None
+
+    candidate = (
+        local_repo
+        / Path(parent_group_id.replace(".", "/"))
+        / parent_artifact_id
+        / parent_version
+        / f"{parent_artifact_id}-{parent_version}.pom"
+    )
+    return candidate.resolve()
 
 
 def validate_path_consistency(record: ArtifactRecord) -> str | None:

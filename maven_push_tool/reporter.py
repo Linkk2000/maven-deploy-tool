@@ -57,6 +57,24 @@ class Reporter:
             record.error_stage or "-",
             record.error_message or "",
         )
+        if record.stdout_snippet:
+            self.logger.error("MAVEN-STDOUT %s", record.stdout_snippet)
+        if record.stderr_snippet:
+            self.logger.error("MAVEN-STDERR %s", record.stderr_snippet)
+
+    def record_success(self, record: ArtifactRecord) -> None:
+        self.logger.info(
+            "上传成功 %s packaging=%s repoType=%s repoId=%s",
+            record.gav(),
+            record.packaging or "-",
+            record.repo_type or "-",
+            record.target_repo_id or "-",
+        )
+        if record.target_repo_url:
+            self.logger.info("SUCCESS  目标仓库 %s", record.target_repo_url)
+        deploy_file = record.file_for_deploy()
+        if deploy_file:
+            self.logger.info("SUCCESS  本地文件 %s", deploy_file)
 
     def write_failed_files(self) -> None:
         if not self.config.failed_file:
@@ -107,6 +125,15 @@ class Reporter:
             summary.release_total,
             summary.snapshot_total,
             summary.dry_run,
+            summary.deploy_success,
+            summary.deploy_skipped,
+            summary.deploy_failed,
+            summary.validation_failed,
+        )
+        self.logger.info(
+            "执行完成：扫描 %s，命中 %s，成功 %s，跳过 %s，失败 %s，校验失败 %s",
+            summary.scan_total,
+            summary.filtered_total,
             summary.deploy_success,
             summary.deploy_skipped,
             summary.deploy_failed,

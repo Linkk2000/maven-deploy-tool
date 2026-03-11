@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         reporter.info(f"START    dryRun={config.dry_run} retry={config.retry} timeout={config.timeout}s")
         reporter.info(f"REPO     local={runtime.local_repo}")
         reporter.info("SETTINGS effective=%s", runtime.effective_settings_file or "<default-not-found>")
+        reporter.info("MAVEN    binary=%s", runtime.effective_mvn_bin)
         reporter.info(
             "TARGET   release=%s snapshot=%s",
             config.release_repo_url,
@@ -122,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             if record.deploy_status == DEPLOY_SUCCESS:
                 summary.deploy_success += 1
                 reporter.event("DEPLOY", record, "EXECUTE", DEPLOY_SUCCESS)
+                reporter.record_success(record)
                 continue
 
             summary.deploy_failed += 1
