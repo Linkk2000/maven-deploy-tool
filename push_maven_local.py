@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
             config.release_repo_url,
             config.snapshot_repo_url,
         )
+        reporter.info("FILTERCFG packaging=%s", ",".join(sorted(config.packaging)))
 
         if config.threads != 1:
             reporter.warning("V1 当前仍按串行执行，--threads 已记录但暂未启用并发。")
