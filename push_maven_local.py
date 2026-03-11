@@ -20,7 +20,7 @@ from maven_push_tool.parser import build_record_from_dir, validate_record
 from maven_push_tool.precheck import precheck_remote
 from maven_push_tool.reporter import Reporter
 from maven_push_tool.resolver import resolve_target_repo
-from maven_push_tool.scanner import scan_version_dirs
+from maven_push_tool.scanner import build_scan_plan, scan_version_dirs
 from maven_push_tool.selector import apply_selection_rules
 
 
@@ -46,7 +46,15 @@ def main(argv: list[str] | None = None) -> int:
         if config.threads != 1:
             reporter.warning("V1 当前仍按串行执行，--threads 已记录但暂未启用并发。")
 
-        candidate_dirs = scan_version_dirs(runtime.local_repo)
+        scan_plan = build_scan_plan(runtime.local_repo, config)
+        if scan_plan.roots:
+            reporter.info("SCANROOT mode=%s roots=%s", scan_plan.mode, len(scan_plan.roots))
+            for root in scan_plan.roots:
+                reporter.info("SCANROOT path=%s", root)
+        else:
+            reporter.warning("扫描根目录为空，未找到与当前筛选条件对应的本地目录。")
+
+        candidate_dirs = scan_version_dirs(scan_plan.roots)
         summary.scan_total = len(candidate_dirs)
         reporter.info(f"SCAN     检测到候选版本目录 {summary.scan_total} 个")
 
