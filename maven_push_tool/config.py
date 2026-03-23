@@ -36,6 +36,9 @@ class AppConfig:
     scan_subpath: Optional[str]
     packaging: set[str]
     include_classifier: bool
+    snapshot_history_mode: str
+    snapshot_history_count: int
+    snapshot_build_mode: str
     dry_run: bool
     threads: int
     retry: int
@@ -85,6 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-classifier",
         default=False,
         action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument(
+        "--snapshot-history-mode",
+        default="all",
+        choices=["latest", "all", "count"],
+    )
+    parser.add_argument("--snapshot-history-count", type=int, default=1)
+    parser.add_argument(
+        "--snapshot-build-mode",
+        default="latest",
+        choices=["latest", "fail-if-multiple"],
     )
 
     parser.add_argument(
@@ -169,6 +183,9 @@ def load_config(argv: Optional[list[str]] = None) -> AppConfig:
         scan_subpath=args.scan_subpath,
         packaging=packaging,
         include_classifier=args.include_classifier,
+        snapshot_history_mode=args.snapshot_history_mode,
+        snapshot_history_count=args.snapshot_history_count,
+        snapshot_build_mode=args.snapshot_build_mode,
         dry_run=args.dry_run,
         threads=args.threads,
         retry=args.retry,
@@ -202,6 +219,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("--timeout 必须大于 0。")
     if not config.packaging:
         raise ValueError("--packaging 至少要包含一种类型。")
+    if config.snapshot_history_count < 1:
+        raise ValueError("--snapshot-history-count 不能小于 1。")
     unsupported = config.packaging.difference(SUPPORTED_PACKAGING)
     if unsupported:
         joined = ",".join(sorted(unsupported))

@@ -27,8 +27,22 @@ class PomModel:
     properties: dict[str, str]
 
 
-def build_record_from_dir(version_dir: Path, local_repo: Path) -> ArtifactRecord:
+@dataclass(order=True)
+class SnapshotBuild:
+    sort_key: tuple[str, int]
+    timestamp: str
+    build_number: int
+    pom_path: Path | None = None
+    jar_path: Path | None = None
+
+
+def build_record_from_dir(version_dir: Path, local_repo: Path, config: AppConfig | None = None) -> ArtifactRecord:
     record = ArtifactRecord(local_repo_root=local_repo, version_dir=version_dir)
+    inferred_artifact_id = version_dir.parent.name
+    inferred_version = version_dir.name
+
+    if inferred_version.endswith("-SNAPSHOT"):
+        return build_snapshot_record(record, inferred_artifact_id, inferred_version, local_repo, config)
 
     pom_files = sorted(version_dir.glob("*.pom"))
     if not pom_files:
@@ -66,6 +80,71 @@ def build_record_from_dir(version_dir: Path, local_repo: Path) -> ArtifactRecord
     else:
         record.file_extension = "pom"
 
+    return record
+
+
+def build_snapshot_record(
+    record: ArtifactRecord,
+    inferred_artifact_id: str,
+    inferred_version: str,
+    local_repo: Path,
+    config: AppConfig | None,
+) -> ArtifactRecord:
+    record.snapshot_base_version = inferred_version[: -len("-SNAPSHOT")]
+
+    exact_pom = record.version_dir / f"{inferred_artifact_id}-{inferred_version}.pom"
+    selected_pom, selected_build = select_snapshot_pom(
+        record.version_dir,
+        inferred_artifact_id,
+        inferred_version,
+        exact_pom,
+        config.snapshot_build_mode if config is not None else "latest",
+    )
+    if selected_pom is None:
+        set_invalid(record, "validate", f"snapshot 目录缺失可识别的 POM: {record.version_dir}")
+        return record
+
+    record.pom_path = selected_pom
+    if selected_build is not None:
+        record.snapshot_timestamp = selected_build.timestamp
+        record.snapshot_build_number = str(selected_build.build_number)
+
+    try:
+        pom_info = parse_pom(record.pom_path, local_repo)
+    except Exception as exc:  # pragma: no cover - 防御性分支
+        set_invalid(record, "validate", f"POM 解析失败: {exc}")
+        return record
+
+    record.group_id = pom_info["group_id"]
+    record.artifact_id = pom_info["artifact_id"]
+    record.version = pom_info["version"]
+    record.packaging = pom_info["packaging"]
+
+    if not record.group_id or not record.artifact_id or not record.version:
+        set_invalid(record, "validate", "POM 缺失 groupId/artifactId/version。")
+        return record
+
+    prefix = f"{record.artifact_id}-{record.version}"
+    record.source_file_path = optional_file(record.version_dir / f"{prefix}-sources.jar")
+    record.javadoc_file_path = optional_file(record.version_dir / f"{prefix}-javadoc.jar")
+
+    if record.packaging == "jar":
+        exact_jar = record.version_dir / f"{record.artifact_id}-{record.version}.jar"
+        selected_jar, jar_build = select_snapshot_main_jar(
+            record.version_dir,
+            record.artifact_id,
+            record.version,
+            exact_jar,
+            config.snapshot_build_mode if config is not None else "latest",
+        )
+        if selected_jar is not None:
+            record.main_file_path = selected_jar
+            record.file_extension = "jar"
+            if jar_build is not None:
+                record.snapshot_timestamp = jar_build.timestamp
+                record.snapshot_build_number = str(jar_build.build_number)
+    else:
+        record.file_extension = "pom"
     return record
 
 
@@ -355,6 +434,73 @@ def set_or_create_child(project: ET.Element, tag: str, value: str) -> None:
     node.text = value
 
 
+def select_snapshot_pom(
+    version_dir: Path,
+    artifact_id: str,
+    version: str,
+    exact_pom: Path,
+    build_mode: str,
+) -> tuple[Path | None, SnapshotBuild | None]:
+    if exact_pom.exists():
+        return exact_pom, None
+    builds = collect_snapshot_builds(version_dir, artifact_id, version)
+    if build_mode == "fail-if-multiple" and len(builds) > 1:
+        return None, None
+    if not builds:
+        return None, None
+    latest = builds[-1]
+    return latest.pom_path, latest
+
+
+def select_snapshot_main_jar(
+    version_dir: Path,
+    artifact_id: str,
+    version: str,
+    exact_jar: Path,
+    build_mode: str,
+) -> tuple[Path | None, SnapshotBuild | None]:
+    if exact_jar.exists():
+        return exact_jar, None
+    builds = [build for build in collect_snapshot_builds(version_dir, artifact_id, version) if build.jar_path]
+    if build_mode == "fail-if-multiple" and len(builds) > 1:
+        return None, None
+    if not builds:
+        return None, None
+    latest = builds[-1]
+    return latest.jar_path, latest
+
+
+def collect_snapshot_builds(version_dir: Path, artifact_id: str, version: str) -> list[SnapshotBuild]:
+    base_version = version[: -len("-SNAPSHOT")]
+    pattern = re.compile(
+        rf"^{re.escape(artifact_id)}-{re.escape(base_version)}-(\d{{8}}\.\d{{6}})-(\d+)\.(pom|jar)$"
+    )
+    builds: dict[tuple[str, int], SnapshotBuild] = {}
+    for candidate in version_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        match = pattern.match(candidate.name)
+        if not match:
+            continue
+        timestamp = match.group(1)
+        build_number = int(match.group(2))
+        extension = match.group(3)
+        key = (timestamp, build_number)
+        build = builds.get(key)
+        if build is None:
+            build = SnapshotBuild(
+                sort_key=(timestamp, build_number),
+                timestamp=timestamp,
+                build_number=build_number,
+            )
+            builds[key] = build
+        if extension == "pom":
+            build.pom_path = candidate
+        elif extension == "jar":
+            build.jar_path = candidate
+    return sorted(builds.values())
+
+
 def resolve_parent_pom_path(
     pom_path: Path,
     parent: ET.Element | None,
@@ -415,11 +561,11 @@ def validate_path_consistency(record: ArtifactRecord) -> str | None:
 
     prefix = f"{record.artifact_id}-{record.version}"
     expected_pom = record.version_dir / f"{prefix}.pom"
-    if record.pom_path != expected_pom:
+    if record.pom_path != expected_pom and not is_valid_snapshot_selected_file(record, record.pom_path, "pom"):
         return f"POM 文件名应为 {expected_pom.name}，实际为 {record.pom_path.name if record.pom_path else '空'}。"
     if record.packaging == "jar":
         expected_main = record.version_dir / f"{prefix}.jar"
-        if record.main_file_path != expected_main:
+        if record.main_file_path != expected_main and not is_valid_snapshot_selected_file(record, record.main_file_path, "jar"):
             return f"主 JAR 文件名应为 {expected_main.name}，实际为 {record.main_file_path.name if record.main_file_path else '空'}。"
 
     return None
@@ -427,6 +573,21 @@ def validate_path_consistency(record: ArtifactRecord) -> str | None:
 
 def optional_file(path: Path) -> Path | None:
     return path if path.exists() else None
+
+
+def is_valid_snapshot_selected_file(
+    record: ArtifactRecord,
+    path: Path | None,
+    extension: str,
+) -> bool:
+    if path is None or record.version is None or record.artifact_id is None:
+        return False
+    if not record.version.endswith("-SNAPSHOT") or record.snapshot_base_version is None:
+        return False
+    pattern = re.compile(
+        rf"^{re.escape(record.artifact_id)}-{re.escape(record.snapshot_base_version)}-(\d{{8}}\.\d{{6}})-(\d+)\.{extension}$"
+    )
+    return bool(pattern.match(path.name))
 
 
 def set_invalid(record: ArtifactRecord, stage: str, message: str) -> None:

@@ -43,6 +43,12 @@ def main(argv: list[str] | None = None) -> int:
             config.snapshot_repo_url,
         )
         reporter.info("FILTERCFG packaging=%s", ",".join(sorted(config.packaging)))
+        reporter.info(
+            "SNAPCFG  historyMode=%s historyCount=%s buildMode=%s",
+            config.snapshot_history_mode,
+            config.snapshot_history_count,
+            config.snapshot_build_mode,
+        )
 
         if config.threads != 1:
             reporter.warning("V1 当前仍按串行执行，--threads 已记录但暂未启用并发。")
@@ -59,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         summary.scan_total = len(candidate_dirs)
         reporter.info(f"SCAN     检测到候选版本目录 {summary.scan_total} 个")
 
-        records = [build_record_from_dir(path, runtime.local_repo) for path in candidate_dirs]
+        records = [build_record_from_dir(path, runtime.local_repo, config) for path in candidate_dirs]
         selected_records = apply_selection_rules(records, config)
         summary.filtered_total = len(selected_records)
         reporter.info(f"FILTER   筛选后命中构件 {summary.filtered_total} 个")
@@ -86,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
                 record,
                 "CHECK",
                 "OK",
-                f"selectedBy={record.selected_by} repoId={record.target_repo_id}",
+                build_validate_detail(record),
             )
             for warning in record.warnings:
                 reporter.warning(f"{record.gav()} {warning}")
@@ -161,6 +167,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def should_stop(config) -> bool:
     return config.stop_on_first_error or not config.continue_on_error
+
+
+def build_validate_detail(record) -> str:
+    details = [f"selectedBy={record.selected_by}", f"repoId={record.target_repo_id}"]
+    if record.snapshot_timestamp and record.snapshot_build_number:
+        details.append(f"snapshotBuild={record.snapshot_timestamp}-{record.snapshot_build_number}")
+    return " ".join(details)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,9 @@ class ArtifactRecord:
     source_file_path: Optional[Path] = None
     javadoc_file_path: Optional[Path] = None
     file_extension: Optional[str] = None
+    snapshot_base_version: Optional[str] = None
+    snapshot_timestamp: Optional[str] = None
+    snapshot_build_number: Optional[str] = None
     repo_type: Optional[str] = None
     target_repo_id: Optional[str] = None
     target_repo_url: Optional[str] = None
