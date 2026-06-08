@@ -35,6 +35,8 @@ class ArtifactRecord:
     classifier: Optional[str] = None
     pom_path: Optional[Path] = None
     deploy_pom_path: Optional[Path] = None
+    parent_pom_path: Optional[Path] = None
+    parent_pom_source: Optional[str] = None
     main_file_path: Optional[Path] = None
     source_file_path: Optional[Path] = None
     javadoc_file_path: Optional[Path] = None

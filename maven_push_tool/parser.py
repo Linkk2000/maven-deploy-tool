@@ -25,6 +25,14 @@ class PomModel:
     parent_artifact_id: str
     parent_version: str
     properties: dict[str, str]
+    parent_pom_path: Path | None
+    parent_resolution_source: str | None
+
+
+@dataclass
+class ParentPomResolution:
+    path: Path | None
+    source: str | None
 
 
 @dataclass(order=True)
@@ -64,6 +72,8 @@ def build_record_from_dir(version_dir: Path, local_repo: Path, config: AppConfig
     record.artifact_id = pom_info["artifact_id"]
     record.version = pom_info["version"]
     record.packaging = pom_info["packaging"]
+    record.parent_pom_path = pom_info.get("parent_pom_path")
+    record.parent_pom_source = pom_info.get("parent_resolution_source")
 
     if not record.group_id or not record.artifact_id or not record.version:
         set_invalid(record, "validate", "POM 缺失 groupId/artifactId/version。")
@@ -119,6 +129,8 @@ def build_snapshot_record(
     record.artifact_id = pom_info["artifact_id"]
     record.version = pom_info["version"]
     record.packaging = pom_info["packaging"]
+    record.parent_pom_path = pom_info.get("parent_pom_path")
+    record.parent_pom_source = pom_info.get("parent_resolution_source")
 
     if not record.group_id or not record.artifact_id or not record.version:
         set_invalid(record, "validate", "POM 缺失 groupId/artifactId/version。")
@@ -188,6 +200,8 @@ def parse_pom(pom_path: Path, local_repo: Path | None = None) -> dict[str, str]:
         "artifact_id": model.artifact_id,
         "version": model.version,
         "packaging": model.packaging,
+        "parent_pom_path": model.parent_pom_path,
+        "parent_resolution_source": model.parent_resolution_source,
     }
 
 
@@ -309,7 +323,7 @@ def load_pom_model(
     raw_packaging = text_of(project.find("packaging")) or "jar"
 
     parent_model = None
-    parent_pom_path = resolve_parent_pom_path(
+    parent_resolution = resolve_parent_pom_path(
         normalized_path,
         parent,
         local_repo,
@@ -317,8 +331,8 @@ def load_pom_model(
         raw_parent_artifact_id,
         raw_parent_version,
     )
-    if parent_pom_path is not None and parent_pom_path.exists():
-        parent_model = load_pom_model(parent_pom_path, local_repo, seen | {normalized_path})
+    if parent_resolution.path is not None and parent_resolution.path.exists():
+        parent_model = load_pom_model(parent_resolution.path, local_repo, seen | {normalized_path})
 
     properties = build_pom_properties(project, parent)
     if parent_model is not None:
@@ -404,6 +418,8 @@ def load_pom_model(
         parent_artifact_id=parent_artifact_id,
         parent_version=parent_version,
         properties=properties,
+        parent_pom_path=parent_resolution.path,
+        parent_resolution_source=parent_resolution.source,
     )
 
 
@@ -508,9 +524,9 @@ def resolve_parent_pom_path(
     parent_group_id: str | None,
     parent_artifact_id: str | None,
     parent_version: str | None,
-) -> Path | None:
+) -> ParentPomResolution:
     if parent is None:
-        return None
+        return ParentPomResolution(None, None)
 
     relative_path = text_of(parent.find("relativePath"))
     if relative_path is None:
@@ -518,15 +534,16 @@ def resolve_parent_pom_path(
 
     if relative_path:
         candidate = (pom_path.parent / relative_path).resolve()
-        if candidate.exists():
-            return candidate
+        candidate_file = normalize_parent_candidate(candidate)
+        if candidate_file is not None and candidate_file.exists():
+            return ParentPomResolution(candidate_file, "relativePath")
 
     if not local_repo:
-        return None
+        return ParentPomResolution(None, None)
     if not parent_group_id or not parent_artifact_id or not parent_version:
-        return None
+        return ParentPomResolution(None, None)
     if "${" in parent_group_id or "${" in parent_artifact_id or "${" in parent_version:
-        return None
+        return ParentPomResolution(None, None)
 
     candidate = (
         local_repo
@@ -535,7 +552,21 @@ def resolve_parent_pom_path(
         / parent_version
         / f"{parent_artifact_id}-{parent_version}.pom"
     )
-    return candidate.resolve()
+    candidate = candidate.resolve()
+    if candidate.exists():
+        return ParentPomResolution(candidate, "local-repo")
+    return ParentPomResolution(None, None)
+
+
+def normalize_parent_candidate(candidate: Path) -> Path | None:
+    if not candidate.exists():
+        return None
+    if candidate.is_dir():
+        pom_xml = candidate / "pom.xml"
+        if pom_xml.exists():
+            return pom_xml.resolve()
+        return None
+    return candidate
 
 
 def validate_path_consistency(record: ArtifactRecord) -> str | None:

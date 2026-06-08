@@ -57,6 +57,13 @@ class Reporter:
             record.error_stage or "-",
             record.error_message or "",
         )
+        self.logger.error("FAILED-DIR %s", record.version_dir)
+        if record.parent_pom_path:
+            self.logger.error(
+                "FAILED-PARENT %s source=%s",
+                record.parent_pom_path,
+                record.parent_pom_source or "-",
+            )
         if record.stdout_snippet:
             self.logger.error("MAVEN-STDOUT %s", record.stdout_snippet)
         if record.stderr_snippet:

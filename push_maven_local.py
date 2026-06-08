@@ -73,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             reporter.warning("未匹配到任何构件，请检查 --gav 与 POM 实际坐标是否一致。")
 
         for record in selected_records:
+            reporter.info("PROCESS  dir=%s", record.version_dir)
             validate_record(record, config)
             if record.validation_status == VALIDATION_INVALID:
                 summary.validation_failed += 1
@@ -173,6 +174,8 @@ def build_validate_detail(record) -> str:
     details = [f"selectedBy={record.selected_by}", f"repoId={record.target_repo_id}"]
     if record.snapshot_timestamp and record.snapshot_build_number:
         details.append(f"snapshotBuild={record.snapshot_timestamp}-{record.snapshot_build_number}")
+    if record.parent_pom_source:
+        details.append(f"parentSource={record.parent_pom_source}")
     return " ".join(details)
 
 
