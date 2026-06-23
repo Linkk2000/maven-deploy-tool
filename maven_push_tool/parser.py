@@ -42,6 +42,7 @@ class SnapshotBuild:
     build_number: int
     pom_path: Path | None = None
     jar_path: Path | None = None
+    war_path: Path | None = None
 
 
 def build_record_from_dir(version_dir: Path, local_repo: Path, config: AppConfig | None = None) -> ArtifactRecord:
@@ -54,7 +55,7 @@ def build_record_from_dir(version_dir: Path, local_repo: Path, config: AppConfig
 
     pom_files = sorted(version_dir.glob("*.pom"))
     if not pom_files:
-        set_invalid(record, "validate", "缺失 POM，V1 默认不上传只有 JAR 的构件。")
+        set_invalid(record, "validate", "缺失 POM，V1 默认不上传只有主构件文件的构件。")
         return record
 
     if len(pom_files) > 1:
@@ -83,10 +84,11 @@ def build_record_from_dir(version_dir: Path, local_repo: Path, config: AppConfig
     record.source_file_path = optional_file(version_dir / f"{prefix}-sources.jar")
     record.javadoc_file_path = optional_file(version_dir / f"{prefix}-javadoc.jar")
 
-    main_jar = version_dir / f"{prefix}.jar"
-    if main_jar.exists():
-        record.main_file_path = main_jar
-        record.file_extension = "jar"
+    if record.packaging in {"jar", "war"}:
+        main_file = version_dir / f"{prefix}.{record.packaging}"
+        record.file_extension = record.packaging
+        if main_file.exists():
+            record.main_file_path = main_file
     else:
         record.file_extension = "pom"
 
@@ -140,21 +142,23 @@ def build_snapshot_record(
     record.source_file_path = optional_file(record.version_dir / f"{prefix}-sources.jar")
     record.javadoc_file_path = optional_file(record.version_dir / f"{prefix}-javadoc.jar")
 
-    if record.packaging == "jar":
-        exact_jar = record.version_dir / f"{record.artifact_id}-{record.version}.jar"
-        selected_jar, jar_build = select_snapshot_main_jar(
+    if record.packaging in {"jar", "war"}:
+        record.file_extension = record.packaging
+        exact_main = record.version_dir / f"{record.artifact_id}-{record.version}.{record.packaging}"
+        selected_main, main_build = select_snapshot_main_file(
             record.version_dir,
             record.artifact_id,
             record.version,
-            exact_jar,
+            record.packaging,
+            exact_main,
             config.snapshot_build_mode if config is not None else "latest",
         )
-        if selected_jar is not None:
-            record.main_file_path = selected_jar
-            record.file_extension = "jar"
-            if jar_build is not None:
-                record.snapshot_timestamp = jar_build.timestamp
-                record.snapshot_build_number = str(jar_build.build_number)
+        if selected_main is not None:
+            record.main_file_path = selected_main
+            record.file_extension = record.packaging
+            if main_build is not None:
+                record.snapshot_timestamp = main_build.timestamp
+                record.snapshot_build_number = str(main_build.build_number)
     else:
         record.file_extension = "pom"
     return record
@@ -165,7 +169,7 @@ def validate_record(record: ArtifactRecord, config: AppConfig) -> None:
         record.deploy_status = DEPLOY_FAILED_VALIDATION
         return
 
-    if record.packaging not in {"jar", "pom"}:
+    if record.packaging not in {"jar", "pom", "war"}:
         set_invalid(record, "validate", f"V1 暂不支持 packaging={record.packaging}")
         return
 
@@ -174,13 +178,13 @@ def validate_record(record: ArtifactRecord, config: AppConfig) -> None:
             set_invalid(record, "validate", "packaging=pom 但缺失 POM 文件。")
             return
         if record.main_file_path is not None and record.main_file_path.exists():
-            record.warnings.append("packaging=pom 但发现同名 jar，已按 pom 上传。")
-    elif record.packaging == "jar":
+            record.warnings.append("packaging=pom 但发现主构件文件，已按 pom 上传。")
+    elif record.packaging in {"jar", "war"}:
         if record.main_file_path is None or not record.main_file_path.exists():
-            set_invalid(record, "validate", "packaging=jar 但缺失主 JAR 文件。")
+            set_invalid(record, "validate", f"packaging={record.packaging} 但缺失主 {record.packaging.upper()} 文件。")
             return
         if record.pom_path is None or not record.pom_path.exists():
-            set_invalid(record, "validate", "packaging=jar 但缺失 POM 文件。")
+            set_invalid(record, "validate", f"packaging={record.packaging} 但缺失 POM 文件。")
             return
 
     path_issue = validate_path_consistency(record)
@@ -459,7 +463,11 @@ def select_snapshot_pom(
 ) -> tuple[Path | None, SnapshotBuild | None]:
     if exact_pom.exists():
         return exact_pom, None
-    builds = collect_snapshot_builds(version_dir, artifact_id, version)
+    builds = [
+        build
+        for build in collect_snapshot_builds(version_dir, artifact_id, version)
+        if build.pom_path is not None
+    ]
     if build_mode == "fail-if-multiple" and len(builds) > 1:
         return None, None
     if not builds:
@@ -468,28 +476,41 @@ def select_snapshot_pom(
     return latest.pom_path, latest
 
 
-def select_snapshot_main_jar(
+def select_snapshot_main_file(
     version_dir: Path,
     artifact_id: str,
     version: str,
-    exact_jar: Path,
+    packaging: str,
+    exact_file: Path,
     build_mode: str,
 ) -> tuple[Path | None, SnapshotBuild | None]:
-    if exact_jar.exists():
-        return exact_jar, None
-    builds = [build for build in collect_snapshot_builds(version_dir, artifact_id, version) if build.jar_path]
+    if exact_file.exists():
+        return exact_file, None
+    builds = [
+        build
+        for build in collect_snapshot_builds(version_dir, artifact_id, version)
+        if snapshot_build_file(build, packaging) is not None
+    ]
     if build_mode == "fail-if-multiple" and len(builds) > 1:
         return None, None
     if not builds:
         return None, None
     latest = builds[-1]
-    return latest.jar_path, latest
+    return snapshot_build_file(latest, packaging), latest
+
+
+def snapshot_build_file(build: SnapshotBuild, packaging: str) -> Path | None:
+    if packaging == "jar":
+        return build.jar_path
+    if packaging == "war":
+        return build.war_path
+    return None
 
 
 def collect_snapshot_builds(version_dir: Path, artifact_id: str, version: str) -> list[SnapshotBuild]:
     base_version = version[: -len("-SNAPSHOT")]
     pattern = re.compile(
-        rf"^{re.escape(artifact_id)}-{re.escape(base_version)}-(\d{{8}}\.\d{{6}})-(\d+)\.(pom|jar)$"
+        rf"^{re.escape(artifact_id)}-{re.escape(base_version)}-(\d{{8}}\.\d{{6}})-(\d+)\.(pom|jar|war)$"
     )
     builds: dict[tuple[str, int], SnapshotBuild] = {}
     for candidate in version_dir.iterdir():
@@ -514,6 +535,8 @@ def collect_snapshot_builds(version_dir: Path, artifact_id: str, version: str) -
             build.pom_path = candidate
         elif extension == "jar":
             build.jar_path = candidate
+        elif extension == "war":
+            build.war_path = candidate
     return sorted(builds.values())
 
 
@@ -594,10 +617,10 @@ def validate_path_consistency(record: ArtifactRecord) -> str | None:
     expected_pom = record.version_dir / f"{prefix}.pom"
     if record.pom_path != expected_pom and not is_valid_snapshot_selected_file(record, record.pom_path, "pom"):
         return f"POM 文件名应为 {expected_pom.name}，实际为 {record.pom_path.name if record.pom_path else '空'}。"
-    if record.packaging == "jar":
-        expected_main = record.version_dir / f"{prefix}.jar"
-        if record.main_file_path != expected_main and not is_valid_snapshot_selected_file(record, record.main_file_path, "jar"):
-            return f"主 JAR 文件名应为 {expected_main.name}，实际为 {record.main_file_path.name if record.main_file_path else '空'}。"
+    if record.packaging in {"jar", "war"}:
+        expected_main = record.version_dir / f"{prefix}.{record.packaging}"
+        if record.main_file_path != expected_main and not is_valid_snapshot_selected_file(record, record.main_file_path, record.packaging):
+            return f"主 {record.packaging.upper()} 文件名应为 {expected_main.name}，实际为 {record.main_file_path.name if record.main_file_path else '空'}。"
 
     return None
 

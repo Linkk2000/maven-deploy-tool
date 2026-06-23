@@ -67,7 +67,7 @@ def is_candidate_version_dir(version_dir: Path, filenames: list[str]) -> bool:
     useful_files = [name for name in filenames if is_candidate_file(name)]
     if not useful_files:
         return False
-    return any(name.endswith(".pom") or name.endswith(".jar") for name in useful_files)
+    return any(name.endswith((".pom", ".jar", ".war")) for name in useful_files)
 
 
 def is_candidate_file(filename: str) -> bool:

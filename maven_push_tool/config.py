@@ -40,7 +40,7 @@ else:
             else:
                 setattr(namespace, self.dest, False)
 
-SUPPORTED_PACKAGING = {"jar", "pom"}
+SUPPORTED_PACKAGING = {"jar", "pom", "war"}
 TARGET_REPO_MODES = {"auto", "force-release", "force-snapshot"}
 
 
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gav", action="append", default=[])
     parser.add_argument("--input-file", type=Path)
     parser.add_argument("--scan-subpath")
-    parser.add_argument("--packaging", default="jar,pom")
+    parser.add_argument("--packaging", default="jar,pom,war")
     parser.add_argument(
         "--include-classifier",
         default=False,
@@ -252,7 +252,7 @@ def validate_config(config: AppConfig) -> None:
     unsupported = config.packaging.difference(SUPPORTED_PACKAGING)
     if unsupported:
         joined = ",".join(sorted(unsupported))
-        raise ValueError(f"V1 仅支持 jar,pom，发现不支持的 packaging: {joined}")
+        raise ValueError(f"V1 仅支持 jar,pom,war，发现不支持的 packaging: {joined}")
     if config.input_file and not config.input_file.exists():
         raise ValueError(f"--input-file 不存在: {config.input_file}")
     if config.settings_file and not config.settings_file.exists():
