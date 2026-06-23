@@ -12,6 +12,34 @@ from typing import Iterable, Optional
 
 from .models import GavPattern, RuntimeContext, SettingsInfo, SettingsServer
 
+# ---- 兼容 Python 3.8: BooleanOptionalAction 仅在 3.9+ 存在 ----
+if hasattr(argparse, "BooleanOptionalAction"):
+    _BoolOptAction = argparse.BooleanOptionalAction
+else:
+    class _BoolOptAction(argparse.Action):
+        """在 Python <3.9 下模拟 BooleanOptionalAction 的行为。
+
+        对 --flag 传 True，对 --no-flag 传 False，缺省取 default 值。
+        """
+        def __init__(self, option_strings, dest, default=None, **kwargs):
+            self._positive: list[str] = []
+            self._negative: list[str] = []
+            expanded: list[str] = []
+            for opt in option_strings:
+                expanded.append(opt)
+                self._positive.append(opt)
+                no_prefix = "--no-" + opt.lstrip("-")
+                expanded.append(no_prefix)
+                self._negative.append(no_prefix)
+            super().__init__(option_strings=expanded, dest=dest, nargs=0,
+                             default=default, **kwargs)
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            if option_string in self._positive:
+                setattr(namespace, self.dest, True)
+            else:
+                setattr(namespace, self.dest, False)
+
 SUPPORTED_PACKAGING = {"jar", "pom"}
 TARGET_REPO_MODES = {"auto", "force-release", "force-snapshot"}
 
@@ -74,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--auth-from-settings",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
 
     parser.add_argument("--all", dest="scan_all", action="store_true")
@@ -87,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-classifier",
         default=False,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument(
         "--snapshot-history-mode",
@@ -104,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--retry", type=int, default=0)
@@ -112,28 +140,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--continue-on-error",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument(
         "--stop-on-first-error",
         default=False,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
 
     parser.add_argument(
         "--release-precheck",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument(
         "--skip-existing",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument(
         "--fail-on-precheck-error",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
 
     parser.add_argument("--log-file", type=Path)
@@ -145,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-redeploy",
         default=False,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     parser.add_argument(
         "--target-repo-mode",
@@ -155,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict-pom-check",
         default=True,
-        action=argparse.BooleanOptionalAction,
+        action=_BoolOptAction,
     )
     return parser
 

@@ -4,6 +4,7 @@ import base64
 import socket
 import urllib.error
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from .config import AppConfig
 from .models import (
@@ -44,6 +45,29 @@ def precheck_remote(
         record.error_message = "预检未返回明确结果。"
         return PRECHECK_FAILED
     return PRECHECK_NOT_FOUND
+
+
+def precheck_records_parallel(
+    records: list[ArtifactRecord],
+    config: AppConfig,
+    settings_info: SettingsInfo,
+    max_workers: int = 8,
+) -> None:
+    """并行预检多个构件的远程存在性。"""
+    if not records:
+        return
+    if max_workers <= 1:
+        for record in records:
+            precheck_remote(record, config, settings_info)
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[Future, ArtifactRecord] = {}
+        for record in records:
+            future = executor.submit(precheck_remote, record, config, settings_info)
+            futures[future] = record
+        for future in futures:
+            future.result()
 
 
 def check_url(

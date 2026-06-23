@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable, Optional
 
 from .config import AppConfig
 from .models import (
@@ -68,6 +70,34 @@ def deploy_record(
     )
     record.error_stage = "deploy"
     record.error_message = last_message or "deploy 失败。"
+
+
+def deploy_records_parallel(
+    records: list[ArtifactRecord],
+    config: AppConfig,
+    runtime: RuntimeContext,
+    max_workers: int = 4,
+    on_complete: Optional[Callable[[ArtifactRecord], None]] = None,
+) -> None:
+    """并行部署多个构件，使用线程池并发执行 mvn deploy:deploy-file。"""
+    if max_workers <= 1:
+        for record in records:
+            deploy_record(record, config, runtime)
+            if on_complete:
+                on_complete(record)
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[Future, ArtifactRecord] = {}
+        for record in records:
+            future = executor.submit(deploy_record, record, config, runtime)
+            futures[future] = record
+
+        for future in futures:
+            future.result()
+            record = futures[future]
+            if on_complete:
+                on_complete(record)
 
 
 def build_deploy_command(
